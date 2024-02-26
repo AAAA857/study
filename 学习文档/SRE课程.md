@@ -2077,5 +2077,123 @@ esac
 
 #### keepalived设计于实现:
 
-![keepalived software design](https://img-blog.csdnimg.cn/20200711112634404.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3UwMTIzMjQ3OTg=,size_16,color_FFFFFF,t_70)
+![keepalived software design](C:\Users\THINKPAD\Desktop\学习文档\图片\watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3UwMTIzMjQ3OTg=,size_16,color_FFFFFF,t_70)
+
+```shell
+# keepalived 采用了多进程模式，每个进程负责不同的服务功能
+
+core： 			keepalived核心程序，全局配置解析、管理进程启动
+
+vrrp:  			实现了vrrp d 程序代码用来实现vrrp协议
+
+check: 			keepalived的health checker子进程的目录 包括了所有的健康检查方式以及对应的配置的解析， LVS的配置解析也在这个里面
+
+SMTP: 			实现了邮件通知机制
+
+IPVS: 			keepalived 可以直接生成ipvs规则就是调用此模块生成
+
+control plane:  负责主配置文件加载解析
+
+watchDog:		用来监控keepalived进程运行状态，当进程出现异常时会采取一些特定工作措施例如重启启动进程
+```
+
+#### keepalived部署:
+
+
+
+#### keepalived配置讲解:
+
+```shell
+# keepalived 配置文件分为三个区域
+
+1. 全局区域(global)
+2. vrrp配置区域（vrrp_instance）
+3. lvs配置区域(virtual_server)
+
+
+```
+
+##### global空间:
+
+```shell
+# 全局定义主要设置keepalived的通知机制和标识：
+
+
+
+glabal_defs:
+	#keepalived支持运行修改配置文件，当热修改时配置文件会保存在此目录从而下次启动时配置仍然是最新的，此目录必须手动创建。
+	config_save_dir: path	
+	# keepalived监视进程列表如果设置的进程出现了故障会自动进行重启，属于优化参数例如不需要ipvs功能可以将其取消，从而来降低keepalived服务工作负载。
+    process_names:	process_name
+        默认值：process_names: keepalived, keepalived_vrrp, keepalived_ipvs, keepalived_bfd
+	# keepalived在启动时执行的脚本或者命令，主要是做启动前优化动作
+	startup_script：	SCRIPT_NAME [username [groupname]]  
+	# 启动脚本执行超时时间
+	startup_script_timeout: SECONDS    # range [1,1000]
+	# keepalived在关闭时执行的脚本
+	shutdown_script	CRIPT_NAME [username [groupname]]
+	shutdown_script_timeout SECONDS   # range [1,1000]
+	# 配置邮件接收地址
+	notification_email {
+               admin@example1.com
+               ...
+           }
+    # 标题电子邮件地址 
+    notification_email_from admin@example.com
+    # 邮件smtp地址
+	smtp_server 127.0.0.1 [<PORT>]
+	# 在邮件消息中使用的名称标题
+	smtp_helo_name <STRING>
+	# smtp服务器连接超时时间
+	smtp_connect_timeout 30
+	# keepalived运行机器唯一标识默认使用主机名
+	router_id my_hostname
+	# ipv4下默认使用的组播地址
+	vrrp_mcast_group4 224.0.0.18
+	# ipv6下默认使用的组播地址
+	vrrp_mcast_group6 ff02::12
+	# vrrp发送消息的网卡名称
+	default_interface eth0
+
+```
+
+##### vrrp空间:
+
+```shell
+
+vrrp_instance inside_network {
+	state MASTER
+	interface eth0
+	dont_track_primary
+	track_interface {
+		eth0
+		eth1
+	}
+	mcast_src_ip <IPADDR>
+	garp_master_delay 10
+	virtual_router_id 51
+	priority 100
+	advert_int 1
+	authentication {
+		auth_type PASS
+		autp-pass 1234
+	}
+	virtual_ipaddress {
+		#<IPADDR>/<MASK>brd<IPADDR>dev<STRING>scope<SC OPT>label<LABEL>
+		192.168.200.17/24 dev eth1
+		192.168.200.18/24 dev eth2 label eth2:1
+	}
+	virtual_routes {
+		#src<IPADDR>[to] <IPADDR>/<MASK>via lgw<IPADDR>dev<STRING>scope<SCOPE>
+		src 192.168.100. 1 to 192.168.109.0/24 via 192.168.200.254 dev eth1
+		192.168.110.0/24 via 192.168.200.254 dev eth1
+		192.168.111.0/24 dev eth2
+		192.168.112.0/24 via 192.168.100. 254
+	}
+	nopreempt
+	preemtp_delay 300
+	debug
+}
+
+```
 
