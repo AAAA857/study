@@ -426,7 +426,7 @@ $ docker run --net=ipnet210 --ip=10.1.214.9 -it --rm alpine ping -c 2 192.168.21
    为了从远程 Docker 主机 ping 容器或者容器能够 ping 远程主机，远程主机或之间的物理网络需要有一条路由指向容器的 Docker 主机 eth 接口的主机 IP 地址。
 ```
 
-## Docker 存储卷:
+## Docker 存储引擎:
 
 ### Overlay2存储:
 
@@ -514,26 +514,233 @@ $ docker run --net=ipnet210 --ip=10.1.214.9 -it --rm alpine ping -c 2 192.168.21
 
 # 为什么文件没删除而merge层却看不到？
   whiteout: 概念存在于联合文件系统（UnionFS）中，代表某一类占位符形态的特殊文件，当用户文件夹与系统文件夹的共通部分联合到一个目录时（例如 bin 目录），用户可删除归属于自己的某些系统文件副本，但归属于系统级的原件仍存留于同一个联合目录中，此时系统将产生一份 whiteout 文件，表示该文件在当前用户目录中已删除，但系统目录中仍然保留。
+  
+  overlay在对文件进行操作时用到了写时复制（Copy on Write）技术，在没有对文件进行修改时，merged 目录直接使用 lower 目录下的文件，只有当我们在 merged 目录对文件进行修改时，才会把修改的文件复制到 upper 目录
 ```
 
-![image-20240322111617699](C:\Users\THINKPAD\AppData\Roaming\Typora\typora-user-images\image-20240322111617699.png)
+![image-20240322111617699](C:\Users\THINKPAD\PycharmProjects\pythonProject\学习目录\git_repostry\study\学习文档\SRE学习\Docker\图片\image-20240322111617699.png)
 
-
+### Docker Overlay2:
 
 ```shell
- overlay2（分层式联合挂载） 是基于overlay的升级版本俩者使用的存储驱动都是OverlayFS。
+ 在docker中联合挂载系统不仅仅又overlay2，同样支持 overlay、overlay2、aufs、vfs 等， 较新版本的 Docker 中普遍采用了 overlay2 这种文件结构，其具有更优越的驱动性能，而 overlay 与 overlay2 的本质区别就是二者在镜像层之间的共享数据方法不同：
+    
+ 1.overlay 通过 硬链接 的方式共享数据，只支持，增加了磁盘 inode 负担
+ 2.overlay2 通过将多层 lower 文件联合在一起
+ 
+ 
+ # 查看docker 当前 storage driver
+ $ docker info |grep "storage driver"
+ 
+ #  日常操作主要涉及两个层面：
+
+ 1. 镜像层
+ 2. docker 容器
+ 
+ # 如何查看容器的overlay挂载信息
+ $ docker container inspec <容器ID>
+     "GraphDriver": {
+                "Data": {
+                    "LowerDir": "/var/lib/docker/overlay2/4d51c33fd52ca178482df48c28242667ff02ee143c90363b209009af2ffbfe5c-init/diff:/var/lib/docker/overlay2/356df0bcbe9966f2b5344a994a2f14d99c26b2d714452fc637114013f03921e5/diff",
+                    "MergedDir": "/var/lib/docker/overlay2/4d51c33fd52ca178482df48c28242667ff02ee143c90363b209009af2ffbfe5c/merged",
+                    "UpperDir": "/var/lib/docker/overlay2/4d51c33fd52ca178482df48c28242667ff02ee143c90363b209009af2ffbfe5c/diff",
+                    "WorkDir": "/var/lib/docker/overlay2/4d51c33fd52ca178482df48c28242667ff02ee143c90363b209009af2ffbfe5c/work"
+                },
+                "Name": "overlay2"
+            }
+```
+
+### 容器层Overlay目录:
+
+```shell
+  overlay2（分层式联合挂载） 是基于overlay的升级版本俩者使用的存储驱动都是OverlayFS。
 
  overlay  2014年首次被docker使用
  overlay2 2016年被合并在docker 1.12版本中引用，主要是修复了overlay中inode耗尽问题
  
  
-
-
-
-
+ docker 容器会将overlay层级目录保存在docker的root目录下。
+ 
+ # 获取docker root目录
+ $ docker info |grep "Docker Root"
+ $ cd /var/lib/docker/overlay2
+ 
+ # 容器目录文件描述
+ diff：	是一个目录里面存放了当前镜像层文件数据信息
+ link：  是当前目录的短名称别名软连接，名字太长mount挂载受限制
+ lower： 是在此层之下挂载应用的其他lower层次
+ meraged: 容器试图层
+ work：	overlay所需要的目录
+ init:	 放置了一下特殊文件比如dns配置文件主机名等
 ```
 
+## Docker 存储卷:
 
+![Docker 主机上的卷](C:\Users\THINKPAD\PycharmProjects\pythonProject\学习目录\git_repostry\study\学习文档\SRE学习\Docker\图片\types-of-mounts-volume.webp)
+
+```shell
+默认情况下，容器内创建的所有文件都存储在可写容器层上。这意味着：
+  
+  1. 当该容器不再存在时，数据不会持久存在，并且如果另一个进程需要数据，则可能很难从容器中获取数据。
+  2. 容器的可写层与运行容器的主机紧密耦合。您无法轻松地将数据移动到其他地方。  
+  3. 写入容器的可写层需要 存储驱动程序来管理文件系统。存储驱动程序使用 Linux 内核提供联合文件系统。与使用 直接写入主机文件系统的数据卷相比，这种额外的抽象会降低性能。
+ 
+ 
+ # docker 支持的持久存储方式
+ 	1. Volume 卷
+ 	2. bind mount Volume 绑定挂载
+ 	3. tempfs 容器空间
+ 	
+ 卷:  由docker程序管理"/var/lib/docker/volumes"之上，非docker进程不应该去修改里面的内容
+ 绑定挂载: 用户可以在宿主机上定义一个指定存储目录，随后容器内的路径将于定义的路径做关联
+ tempfs:  数据将存储在容器空间，容器重启数据将会丢失，此数据不会保存在宿主机空间之上
+ 
+ 
+ # 容器跨主机了那怎么样才能做数据共享？
+   容器如果在多个节点之上飘逸不是固定的那么上面的卷方式均不能保证数据的一致性，此时需要用户定义第三方NAS存储来挂载到容器之上。
+```
+
+### Volume的使用案例:
+
+```shell
+Volume 是在 Docker 容器和服务中保存数据的首选方式。卷的一些用例包括：
+
+1. 在多个运行的容器之间共享数据。如果您没有显式创建它，则会在第一次将其挂载到容器中时创建一个卷。当该容器停止或被删除时，该卷仍然存在。多个容器可以同时挂载同一卷，无论是读写还是只读。仅当您明确删除卷时，卷才会被删除。
+
+2. 当不保证 Docker 主机具有给定的目录或文件结构时。卷可帮助您将 Docker 主机的配置与容器运行时解耦。
+
+3. 当您想要将容器的数据存储在远程主机或云提供商上，而不是本地时。
+
+4. 当您需要将数据从一台 Docker 主机备份、恢复或迁移到另一台时，卷是更好的选择。您可以停止使用该卷的容器，然后备份该卷的目录（例如/var/lib/docker/volumes/<volume-name>）。
+```
+
+### Bind Mount Volume的使用案例:
+
+```shell
+   docker 官方大力推荐使用Volume方式挂载持久数据，但是有的时候这不是很方便，例如我们想将配置文件挂载到容器内，如果使用的Volume方式则需要更深的存储路径，此时Bind mount Volume 排上用场。
+   
+   推荐使用场景:
+   		1. 将配置文件从主机共享到容器。这就是 Docker 默认为容器提供 DNS 解析的方式，即 /etc/resolv.conf从主机挂载到每个容器中。
+   		2. 在 Docker 主机上的开发环境和容器之间共享源代码或构建工件。例如，您可以将 Maventarget/ 目录挂载到容器中，每次在 Docker 主机上构建 Maven 项目时，容器都可以访问重建的工件。
+   		3. 当保证Docker主机的文件或目录结构与容器所需的绑定挂载一致时。
+```
+
+### Volume使用:
+
+```shell
+   卷是持久保存 Docker 容器生成和使用的数据的首选机制。虽然绑定挂载取决于主机的目录结构和操作系统，但卷完全由 Docker 管理。与绑定挂载相比，卷有几个优点：
+   1. 卷比绑定安装更容易备份或迁移,当需要备份或迁移的时候可以直接scp 或 tar 整个volume目录；
+   2. 您可以使用 Docker CLI 命令或 Docker API 管理卷；
+   3. 卷适用于 Linux 和 Windows 容器；
+   4. 卷可以在多个容器之间更安全地共享；
+   5. 卷驱动程序允许您将卷存储在远程主机或云提供商上、加密卷的内容或添加其他功能；
+
+
+
+# volume卷创建参数
+--mount	 			//于-v 类似都是用来定义一个卷的，--mount 定义方式是"key=value"对顺序没有要求,-v 对定义的顺序是有要求的
+--type=				//用于指定当前卷类型支持如下
+	volume
+	tempfs
+	bind
+--source=			//用来命名一个卷，如果不写将使用匿名方式
+--destination= 		//用来定义当前卷在容器内的挂载路径
+--volume-opt=		//用来指定卷需要定义的参数，支持写多个
+--readonly			//如果定义此卷将是只读模式，不定义就是读写模式
+
+# 定义一个Volume类型卷
+$ docker run --name test-volume -it -d --mount "type=volume,soruce=data,destination=/data"  alpine
+
+
+# 查看挂载卷
+$ docker container inspect a23
+  "Mounts": [
+            {
+                "Type": "volume",
+                "Name": "data",
+                "Source": "/var/lib/docker/volumes/data/_data",
+                "Destination": "/data",
+                "Driver": "local",
+                "Mode": "z",
+                "RW": true,
+                "Propagation": ""
+            }
+        ]
+ # 测试卷是否生效
+ $ docker container exec -it xxxxx sh
+ $ cd /data
+ $ mkdir test
+ 
+ # 宿主机
+ $ cd /var/lib/docker/volumes/data/_data
+ $ ls 
+```
+
+#### CLI 管理Volume:
+
+```shell
+使用Volume方式创建的持久卷是可以通过docker cli 去做生命周期的管理 具体使用方式如下:
+  
+使用方式:  docker volume COMMAND
+
+Manage volumes： 用于管理卷
+
+Commands:
+  create      创建一个卷
+  inspect     查看一个卷内容
+  ls          显示当前docker已经创建的所有卷名称
+  prune       删除未使用的卷
+  rm          删除一个或多个卷
+  
+# 创建卷
+$ docker volume create package
+
+# 查看卷定义
+$ docker volume inspect package
+
+# 删除一个卷
+$ docker volume rm package 
+
+# 删除匿名未使用的卷
+$ docker volume prune 
+
+# 启动一个容器挂载卷
+$ docker run -d \
+  --name devtest \
+  --mount source=package,target=/app \
+  nginx:latest
+```
+
+### 创建共享卷 :
+
+#### vieux/sshfs:
+
+![共享存储](C:\Users\THINKPAD\PycharmProjects\pythonProject\学习目录\git_repostry\study\学习文档\SRE学习\Docker\图片\volumes-shared-storage.webp)
+
+```shell
+  sshFS 的 Docker 卷插件 此插件运行docker 容器挂载远程主机共享目录，可以实现多容器之间数据共享。
+  
+  官方站点: https://github.com/vieux/docker-volume-sshfs#using-an-ssh-key
+  
+ # 实现基于password方式挂载远程主机共享目录
+ # 安装docker plugin插件
+ $ docker plugin install vieux/sshfs DEBUG=1 sshkey.source=/root/.ssh/
+ 
+ # 创建volume
+ $ docker volume create -d vieux/sshfs -o sshcmd=root@133.133.1.16:/home/test -o password=1qaz#EDC -o IdentityFile=/root/.ssh/id_rsa  sshvolume1
+  IdentityFile //不指定会报错链接被重置
+ 
+ # 创建共享目录
+ # 此处不创建容器启动会报错
+ $ mkdir -pv /home/test
+ 
+ # docker 节点挂载 sshvolume1 卷
+ $ docker run -d  --mount volume-driver=vieux/sshfs,src=sshvolume1,target=/app,volume-opt=sshcmd=root@133.133.1.16:/home/test,volume-opt=password=1qaz#EDC nginx:latest
+
+ # 验证
+ $ docker exec -it <id> bash
+ $ mkdir /app
+```
 
 ## Docker 镜像加速:
 
